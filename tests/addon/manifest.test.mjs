@@ -12,7 +12,7 @@ describe("addon manifest", () => {
 
   it("declares the Zotero-required update manifest URL", () => {
     expect(manifest.applications.zotero.update_url).toBe(
-      "https://github.com/vishnutskumar/zotero-ai-explain/releases/latest/download/updates.json"
+      "https://github.com/GitPancaked/zotero-ai-explain/releases/latest/download/updates.json"
     );
   });
 
@@ -23,7 +23,7 @@ describe("addon manifest", () => {
   it("declares the tested Zotero compatibility range", () => {
     expect(manifest.applications.zotero).toMatchObject({
       strict_min_version: "8.0",
-      strict_max_version: "9.99.99"
+      strict_max_version: "10.0.*"
     });
   });
 });

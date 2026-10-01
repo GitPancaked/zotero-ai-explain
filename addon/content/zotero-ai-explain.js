@@ -520,9 +520,9 @@ ${para}`;
   }
   function pickResumeKey(file) {
     if (file === null) return void 0;
-    const keys = Object.keys(file.items);
-    if (keys.length === 0) return void 0;
-    return keys[keys.length - 1];
+    const keys2 = Object.keys(file.items);
+    if (keys2.length === 0) return void 0;
+    return keys2[keys2.length - 1];
   }
   function createIndexingController(deps) {
     let status = deps.initialStatus ?? createInitialIndexingStatus();
@@ -1192,6 +1192,98 @@ ${para}`;
     }
   });
 
+  // src/preferences/ollama-version.ts
+  function parseVersion(raw) {
+    const match = SEMVER_PATTERN.exec(raw.trim());
+    if (match === null) return null;
+    const major = Number(match[1]);
+    const minor = Number(match[2]);
+    const patch = Number(match[3]);
+    if (!Number.isFinite(major) || !Number.isFinite(minor) || !Number.isFinite(patch)) {
+      return null;
+    }
+    return { major, minor, patch };
+  }
+  function compareVersions(a, b) {
+    if (a.major !== b.major) return a.major - b.major;
+    if (a.minor !== b.minor) return a.minor - b.minor;
+    return a.patch - b.patch;
+  }
+  function isAtLeast(actual, minimum) {
+    return compareVersions(actual, minimum) >= 0;
+  }
+  async function checkOllamaVersion(url, fetch, options) {
+    const trimmed = url.endsWith("/") ? url.slice(0, -1) : url;
+    let response;
+    try {
+      response = await fetch(`${trimmed}/api/version`, options);
+    } catch (err) {
+      return {
+        kind: "unreachable",
+        message: `Ollama version probe failed: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+    if (!response.ok) {
+      return {
+        kind: "unreachable",
+        message: `Ollama version probe returned ${String(response.status)}.`
+      };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (err) {
+      return {
+        kind: "unreachable",
+        message: `Ollama version probe returned non-JSON: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+    if (payload === null || typeof payload !== "object") {
+      return {
+        kind: "unknown",
+        raw: "",
+        message: "Ollama /api/version returned an unexpected payload shape."
+      };
+    }
+    const versionField = payload.version;
+    if (typeof versionField !== "string" || versionField.length === 0) {
+      return {
+        kind: "unknown",
+        raw: "",
+        message: "Ollama /api/version did not include a version string."
+      };
+    }
+    const parsed = parseVersion(versionField);
+    if (parsed === null) {
+      return {
+        kind: "unknown",
+        raw: versionField,
+        message: `Could not parse Ollama version "${versionField}". Expected MAJOR.MINOR.PATCH.`
+      };
+    }
+    const minimum = parseVersion(MIN_OLLAMA_VERSION);
+    if (minimum === null) {
+      return { kind: "ok", version: versionField };
+    }
+    if (!isAtLeast(parsed, minimum)) {
+      return {
+        kind: "below-min",
+        version: versionField,
+        minimum: MIN_OLLAMA_VERSION,
+        message: `Ollama ${versionField} is older than ${MIN_OLLAMA_VERSION}. Some embedding models (e.g. embeddinggemma) require ${MIN_OLLAMA_VERSION}+ for reliable /api/embed support. Upgrade Ollama to ${MIN_OLLAMA_VERSION} or later for best results.`
+      };
+    }
+    return { kind: "ok", version: versionField };
+  }
+  var MIN_OLLAMA_VERSION, SEMVER_PATTERN;
+  var init_ollama_version = __esm({
+    "src/preferences/ollama-version.ts"() {
+      "use strict";
+      MIN_OLLAMA_VERSION = "0.10.0";
+      SEMVER_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/u;
+    }
+  });
+
   // src/preferences/model-discovery.ts
   function parseOllamaModels(payload) {
     if (payload === null || typeof payload !== "object") return [];
@@ -1305,7 +1397,17 @@ ${para}`;
           break;
       }
       const dedup = Array.from(new Set(models)).sort((a, b) => a.localeCompare(b));
-      return { ok: true, models: dedup };
+      let warning;
+      if (request.backend === "ollama") {
+        const versionResult = await checkOllamaVersion(url, request.fetch, {
+          signal: controller.signal,
+          ...headers !== void 0 ? { headers } : {}
+        });
+        if (versionResult.kind === "below-min" || versionResult.kind === "unknown") {
+          warning = versionResult.message;
+        }
+      }
+      return warning !== void 0 ? { ok: true, models: dedup, warning } : { ok: true, models: dedup };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { ok: false, message: `Cannot reach ${request.url}: ${message}` };
@@ -1340,6 +1442,7 @@ ${para}`;
   var init_model_discovery = __esm({
     "src/preferences/model-discovery.ts"() {
       "use strict";
+      init_ollama_version();
       DEFAULT_TIMEOUT_MS = 1500;
     }
   });
@@ -1572,6 +1675,15 @@ ${para}`;
     error.setAttribute("role", "alert");
     error.setAttribute("style", ERROR_TEXT_STYLE);
     error.hidden = true;
+    const warning = document.createElement("p");
+    warning.className = "zotero-ai-field__warning";
+    warning.dataset.warningFor = input.name;
+    warning.setAttribute("role", "status");
+    warning.setAttribute(
+      "style",
+      `margin: 4px 0 0 0; font-size: 11px; color: ${FG_MUTED}; line-height: 1.3; font-style: italic;`
+    );
+    warning.hidden = true;
     group.append(label, row, field);
     if (input.hint !== void 0 && input.hint.length > 0) {
       const hintEl = document.createElement("p");
@@ -1583,7 +1695,7 @@ ${para}`;
       );
       group.append(hintEl);
     }
-    group.append(error);
+    group.append(warning, error);
     return group;
   }
   function makeSelect(name, labelText, current, options, hint) {
@@ -2007,7 +2119,7 @@ ${para}`;
       element.append(renderEmbedSection(inputData.settings, inputData.providerProfile));
       const apiWarning = document.createElement("p");
       apiWarning.className = "zotero-ai-providers__warning";
-      apiWarning.textContent = "API keys are stored in plain text in Zotero's preferences.";
+      apiWarning.textContent = inputData.credentialStorageMessage ?? "API keys require OS secure storage. They are never saved in Zotero preferences.";
       apiWarning.setAttribute("style", SECTION_BLURB_STYLE);
       element.append(apiWarning);
       updateApiKeyVisibility(element, {
@@ -2200,7 +2312,7 @@ ${para}`;
             }
             return;
           }
-          input.onSave(values);
+          await input.onSave(values);
           if (statusEl !== null) {
             statusEl.textContent = "Saved";
             statusEl.hidden = false;
@@ -2392,11 +2504,13 @@ ${para}`;
       const ctx = discoveryContextFor(target);
       if (ctx === null) return;
       paintPicker(target, { kind: "loading" });
+      setDiscoveryWarning(target, void 0);
       void (async () => {
         try {
           const result = await discovery.discover(ctx);
           if (result.ok) {
             paintPicker(target, { kind: "models", models: result.models });
+            setDiscoveryWarning(target, result.warning);
           } else {
             paintPicker(target, { kind: "error", message: result.message });
           }
@@ -2405,6 +2519,17 @@ ${para}`;
           paintPicker(target, { kind: "error", message });
         }
       })();
+    }
+    function setDiscoveryWarning(target, message) {
+      const el = root.querySelector(`[data-warning-for="${target}"]`);
+      if (el === null) return;
+      if (message === void 0 || message.length === 0) {
+        el.hidden = true;
+        el.textContent = "";
+        return;
+      }
+      el.textContent = message;
+      el.hidden = false;
     }
     function scheduleDiscovery(target) {
       if (discovery === void 0) return;
@@ -3827,13 +3952,13 @@ ${para}`;
           const itemPath = joinPath(dirPath, computeItemFileName(itemKey));
           if (knownItemKeys === null) {
             const names = typeof deps.io.listChildren === "function" ? await deps.io.listChildren(dirPath) : null;
-            const keys = /* @__PURE__ */ new Set();
+            const keys2 = /* @__PURE__ */ new Set();
             for (const name of names ?? []) {
               if (name === META_FILE_NAME) continue;
               if (!isSafeItemFileName(name)) continue;
-              keys.add(name.slice(0, -".json".length));
+              keys2.add(name.slice(0, -".json".length));
             }
-            knownItemKeys = keys;
+            knownItemKeys = keys2;
           }
           if (dirMetaCache === null) {
             const onDisk = await readDirMeta();
@@ -4314,9 +4439,6 @@ ${para}`;
     const trimmed = raw.trim();
     if (trimmed === "") {
       return null;
-    }
-    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(trimmed)) {
-      return trimmed;
     }
     try {
       const url = new URL(trimmed);
@@ -6224,6 +6346,566 @@ Question: First question about the passage?`
     log("phase", "click-feedback:done");
   }
 
+  // src/secrets/windows-credential-store.ts
+  var SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+try {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ZoteroCredentials {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct Credential {
+    public uint Flags, Type;
+    public string TargetName, Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public uint CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public uint Persist, AttributeCount;
+    public IntPtr Attributes;
+    public string TargetAlias, UserName;
+  }
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredReadW(string target, uint type, uint flags, out IntPtr credential);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredWriteW(ref Credential credential, uint flags);
+  [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern bool CredDeleteW(string target, uint type, uint flags);
+  [DllImport("advapi32.dll")]
+  public static extern void CredFree(IntPtr credential);
+}
+'@
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if ($request.provider -notin @('openai','anthropic','gemini')) { throw 'Invalid provider' }
+$target = 'zotero-ai-explain/' + $request.provider
+switch ($request.operation) {
+  'get' {
+    $pointer = [IntPtr]::Zero
+    if (-not [ZoteroCredentials]::CredReadW($target, 1, 0, [ref]$pointer)) {
+      if ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 1168) {
+        [Console]::Out.Write('{"secret":null}')
+      } else { throw 'Read failed' }
+    } else {
+      try {
+        $credential = [Runtime.InteropServices.Marshal]::PtrToStructure($pointer, [type][ZoteroCredentials+Credential])
+        if (($credential.CredentialBlobSize % 2) -ne 0) { throw 'Invalid credential' }
+        $secret = [Runtime.InteropServices.Marshal]::PtrToStringUni($credential.CredentialBlob, [int]($credential.CredentialBlobSize / 2))
+        [Console]::Out.Write((@{secret=$secret} | ConvertTo-Json -Compress))
+      } finally { [ZoteroCredentials]::CredFree($pointer) }
+    }
+  }
+  'set' {
+    if ($request.secret -isnot [string] -or $request.secret.Length -eq 0) { throw 'Invalid secret' }
+    $bytes = [Text.Encoding]::Unicode.GetBytes($request.secret)
+    if ($bytes.Length -gt 2560) { throw 'Secret too long' }
+    $blob = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    try {
+      [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $blob, $bytes.Length)
+      $credential = New-Object ZoteroCredentials+Credential
+      $credential.Type = 1
+      $credential.TargetName = $target
+      $credential.UserName = 'Zotero AI Explain'
+      $credential.CredentialBlobSize = $bytes.Length
+      $credential.CredentialBlob = $blob
+      $credential.Persist = 2
+      if (-not [ZoteroCredentials]::CredWriteW([ref]$credential, 0)) { throw 'Write failed' }
+      [Console]::Out.Write('{}')
+    } finally {
+      for ($i = 0; $i -lt $bytes.Length; $i++) { [Runtime.InteropServices.Marshal]::WriteByte($blob, $i, 0) }
+      [Runtime.InteropServices.Marshal]::FreeHGlobal($blob)
+      [Array]::Clear($bytes, 0, $bytes.Length)
+    }
+  }
+  'delete' {
+    if (-not [ZoteroCredentials]::CredDeleteW($target, 1, 0)) {
+      if ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 1168) { throw 'Delete failed' }
+    }
+    [Console]::Out.Write('{}')
+  }
+  default { throw 'Invalid operation' }
+}
+} catch {
+  [Console]::Error.Write('Windows credential storage failed.')
+  exit 1
+}
+`;
+  function encodePowerShellScript(script) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const bytes = Array.from(script).flatMap((character) => [character.charCodeAt(0), 0]);
+    let encoded = "";
+    for (let index = 0; index < bytes.length; index += 3) {
+      const first = bytes[index] ?? 0;
+      const second = bytes[index + 1] ?? 0;
+      const third = bytes[index + 2] ?? 0;
+      encoded += alphabet.charAt(first >> 2);
+      encoded += alphabet.charAt((first & 3) << 4 | second >> 4);
+      encoded += index + 1 < bytes.length ? alphabet.charAt((second & 15) << 2 | third >> 6) : "=";
+      encoded += index + 2 < bytes.length ? alphabet.charAt(third & 63) : "=";
+    }
+    return encoded;
+  }
+  var ENCODED_SCRIPT = encodePowerShellScript(SCRIPT);
+  function createWindowsCredentialStore(run) {
+    async function request(operation, provider, secret) {
+      try {
+        if (!["openai", "anthropic", "gemini"].includes(provider)) {
+          throw new Error();
+        }
+        if (operation === "set" && (!secret || secret.length * 2 > 2560)) {
+          throw new Error();
+        }
+        const result = await run({
+          command: "powershell.exe",
+          args: [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-EncodedCommand",
+            ENCODED_SCRIPT
+          ],
+          stdin: JSON.stringify({ operation, provider, secret })
+        });
+        if (result.exitCode !== 0) throw new Error();
+        const response = JSON.parse(result.stdout);
+        if (typeof response !== "object" || response === null) throw new Error();
+        if (operation === "get") {
+          const value = response.secret;
+          if (value !== null && typeof value !== "string") throw new Error();
+          return { secret: value };
+        }
+        return {};
+      } catch {
+        throw new Error(
+          "Windows Credential Manager is unavailable or the credential operation failed."
+        );
+      }
+    }
+    return {
+      async get(provider) {
+        return (await request("get", provider)).secret ?? null;
+      },
+      async set(provider, secret) {
+        await request("set", provider, secret);
+      },
+      async delete(provider) {
+        await request("delete", provider);
+      }
+    };
+  }
+
+  // src/secrets/linux-credential-store.ts
+  var COMMAND = "/usr/bin/secret-tool";
+  var HELP = "Linux credential storage is unavailable or locked. On Arch, install libsecret and a Secret Service backend (for example: sudo pacman -S libsecret gnome-keyring). Start your desktop's Secret Service and unlock its password-protected default keyring, then retry.";
+  function attributes(provider) {
+    if (!["openai", "anthropic", "gemini"].includes(provider)) {
+      throw new Error("Unsupported API key provider.");
+    }
+    return ["service", "zotero-ai-explain", "provider", provider];
+  }
+  function createLinuxCredentialStore(run) {
+    const invoke = async (args, stdin) => {
+      try {
+        return await run({ command: COMMAND, args, ...stdin === void 0 ? {} : { stdin } });
+      } catch {
+        throw new Error(HELP);
+      }
+    };
+    const get = async (provider) => {
+      const attrs = attributes(provider);
+      const result = await invoke(["lookup", ...attrs]);
+      if (result.exitCode === 0 && result.stdout.length > 0) {
+        return result.stdout;
+      }
+      if (result.exitCode !== 1 || result.stdout.length > 0) {
+        throw new Error(HELP);
+      }
+      const search = await invoke(["search", "--all", "--unlock", ...attrs]);
+      if (search.exitCode === 0 && search.stdout.length === 0) return null;
+      throw new Error(HELP);
+    };
+    return {
+      get,
+      async set(provider, secret) {
+        const attrs = attributes(provider);
+        if (!secret || /\s/.test(secret) || secret.includes(String.fromCharCode(0)) || new TextEncoder().encode(secret).length >= 8192) {
+          throw new Error("API key must be nonempty text without whitespace.");
+        }
+        const result = await invoke(["store", "--label=Zotero AI Explain API key", ...attrs], secret);
+        if (result.exitCode !== 0) throw new Error(HELP);
+        if (await get(provider) !== secret) throw new Error(HELP);
+      },
+      async delete(provider) {
+        const attrs = attributes(provider);
+        if (await get(provider) === null) return;
+        const result = await invoke(["clear", ...attrs]);
+        if (result.exitCode !== 0 || await get(provider) !== null) {
+          throw new Error(HELP);
+        }
+      }
+    };
+  }
+
+  // src/platform/credential-command.ts
+  function createCredentialCommandRunner(subprocess, timeoutMs = 3e4) {
+    return async (input) => {
+      let child;
+      let cancelled = false;
+      let timer;
+      const work = async () => {
+        child = await subprocess.call({
+          command: input.command,
+          arguments: input.args,
+          stderr: "pipe"
+        });
+        const proc = child;
+        if (cancelled) {
+          await proc.kill(0);
+          throw new Error("Credential operation cancelled.");
+        }
+        const drain = async (pipe, keep) => {
+          const decoder = new TextDecoder();
+          let result = "";
+          let size = 0;
+          for (; ; ) {
+            const chunk = await pipe.read();
+            if (chunk.byteLength === 0) break;
+            size += chunk.byteLength;
+            if (size > 65536) throw new Error("Credential helper output exceeded its limit.");
+            if (keep) result += decoder.decode(chunk, { stream: true });
+          }
+          return keep ? result + decoder.decode() : "";
+        };
+        const [stdout, , , status] = await Promise.all([
+          drain(proc.stdout, true),
+          drain(proc.stderr, false),
+          (async () => {
+            if (input.stdin !== void 0) await proc.stdin.write(input.stdin);
+            await proc.stdin.close();
+          })(),
+          proc.wait()
+        ]);
+        return { exitCode: status.exitCode, stdout };
+      };
+      try {
+        return await Promise.race([
+          work(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              reject(new Error("Credential helper timed out."));
+            }, timeoutMs);
+          })
+        ]);
+      } catch {
+        cancelled = true;
+        if (child !== void 0) await child.kill(0).catch(() => void 0);
+        throw new Error(
+          "Secure credential storage is unavailable. Unlock your keyring and try again."
+        );
+      } finally {
+        if (timer !== void 0) clearTimeout(timer);
+      }
+    };
+  }
+
+  // src/platform/system-credential-store.ts
+  function createSystemCredentialStore() {
+    const unavailable = (message) => {
+      const fail = () => Promise.reject(new Error(message));
+      return {
+        credentials: { get: fail, set: fail, delete: fail },
+        storageName: "the OS credential store"
+      };
+    };
+    const chrome = globalThis.ChromeUtils;
+    if (chrome === void 0)
+      return unavailable("Secure credential storage is unavailable in this host.");
+    try {
+      const { Subprocess } = chrome.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+      const { AppConstants } = chrome.importESModule("resource://gre/modules/AppConstants.sys.mjs");
+      const run = createCredentialCommandRunner(Subprocess);
+      if (AppConstants.platform === "win") {
+        const env = Subprocess.getEnvironment();
+        const root = env.SystemRoot ?? env.SYSTEMROOT;
+        if (root === void 0 || !/^[A-Za-z]:\\/u.test(root)) {
+          return unavailable("Windows Credential Manager could not be initialized.");
+        }
+        const command = `${root.replace(/\\$/u, "")}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+        return {
+          credentials: createWindowsCredentialStore((input) => run({ ...input, command })),
+          storageName: "Windows Credential Manager"
+        };
+      }
+      if (AppConstants.platform === "linux") {
+        return {
+          credentials: createLinuxCredentialStore(run),
+          storageName: "your Linux Secret Service keyring"
+        };
+      }
+      return unavailable("Secure API-key storage currently supports Windows and Linux only.");
+    } catch {
+      return unavailable(
+        "Secure credential storage could not be initialized. Restart Zotero and try again."
+      );
+    }
+  }
+
+  // src/preferences/ollama-profile.ts
+  var OLLAMA_BASE_URL_PREF = "extensions.zotero-ai-explain.ollama-base-url";
+  var CHAT_BASE_URL_PREF = "extensions.zotero-ai-explain.chat-base-url";
+  var EMBED_BASE_URL_PREF = "extensions.zotero-ai-explain.embed-base-url";
+  var CHAT_MODEL_PREF = "extensions.zotero-ai-explain.chat-model";
+  var EMBEDDING_MODEL_PREF = "extensions.zotero-ai-explain.embedding-model";
+  var DEFAULT_BASE_URL = "http://localhost:11434";
+  function createDefaultOllamaSettings() {
+    return {
+      baseUrl: DEFAULT_BASE_URL,
+      chatBaseUrl: DEFAULT_BASE_URL,
+      embedBaseUrl: DEFAULT_BASE_URL,
+      chatModel: "gemma4:e4b",
+      embeddingModel: "embeddinggemma",
+      localOnly: true
+    };
+  }
+  function ollamaSettingsToProfile(settings) {
+    return {
+      id: "ollama",
+      displayName: "Ollama",
+      kind: "ollama",
+      // The ProviderProfile feeds chat traffic; use the chat URL so the
+      // user can route chat through the local llm-proxy / codex while
+      // keeping embeddings on a real Ollama daemon.
+      baseUrl: settings.chatBaseUrl,
+      model: settings.chatModel,
+      secret: { kind: "none" },
+      sendMode: "local",
+      enabled: true
+    };
+  }
+  function loadOllamaSettingsFromPrefs(prefs) {
+    const defaults = createDefaultOllamaSettings();
+    const legacyBaseUrl = readNonEmpty(prefs, OLLAMA_BASE_URL_PREF);
+    const chatBaseUrl = readNonEmpty(prefs, CHAT_BASE_URL_PREF);
+    const embedBaseUrl = readNonEmpty(prefs, EMBED_BASE_URL_PREF);
+    const chatModel = readNonEmpty(prefs, CHAT_MODEL_PREF);
+    const embeddingModel = readNonEmpty(prefs, EMBEDDING_MODEL_PREF);
+    const resolvedBaseUrl = legacyBaseUrl ?? defaults.baseUrl;
+    return {
+      baseUrl: resolvedBaseUrl,
+      chatBaseUrl: chatBaseUrl ?? legacyBaseUrl ?? defaults.chatBaseUrl,
+      embedBaseUrl: embedBaseUrl ?? legacyBaseUrl ?? defaults.embedBaseUrl,
+      chatModel: chatModel ?? defaults.chatModel,
+      embeddingModel: embeddingModel ?? defaults.embeddingModel,
+      localOnly: defaults.localOnly
+    };
+  }
+  function saveOllamaSettingsToPrefs(writer, settings) {
+    const chat = settings.chatBaseUrl.trim();
+    const embed = settings.embedBaseUrl.trim();
+    const legacy = settings.baseUrl.trim().length > 0 ? settings.baseUrl.trim() : chat;
+    writer.set(OLLAMA_BASE_URL_PREF, legacy);
+    writer.set(CHAT_BASE_URL_PREF, chat);
+    writer.set(EMBED_BASE_URL_PREF, embed);
+    writer.set(CHAT_MODEL_PREF, settings.chatModel.trim());
+    writer.set(EMBEDDING_MODEL_PREF, settings.embeddingModel.trim());
+  }
+  function readNonEmpty(prefs, name) {
+    let value;
+    try {
+      value = prefs.get(name);
+    } catch {
+      return null;
+    }
+    if (typeof value !== "string") {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+
+  // src/preferences/provider-profile.ts
+  var CHAT_PROVIDER_PREF = "extensions.zotero-ai-explain.chat-provider";
+  var EMBED_PROVIDER_PREF = "extensions.zotero-ai-explain.embed-provider";
+  var OPENAI_API_KEY_PREF = "extensions.zotero-ai-explain.openai-api-key";
+  var ANTHROPIC_API_KEY_PREF = "extensions.zotero-ai-explain.anthropic-api-key";
+  var GEMINI_API_KEY_PREF = "extensions.zotero-ai-explain.gemini-api-key";
+  var CHAT_PROVIDER_KINDS = [
+    "ollama",
+    "codex-cli",
+    "claude-cli",
+    "codex-api",
+    "claude-api"
+  ];
+  var EMBED_PROVIDER_KINDS = ["ollama", "openai", "gemini"];
+  function parseChatProvider(value) {
+    if (value === null) return "ollama";
+    return CHAT_PROVIDER_KINDS.includes(value) ? value : "ollama";
+  }
+  function parseEmbedProvider(value) {
+    if (value === null) return "ollama";
+    return EMBED_PROVIDER_KINDS.includes(value) ? value : "ollama";
+  }
+  function readNonEmpty2(prefs, name) {
+    let value;
+    try {
+      value = prefs.get(name);
+    } catch {
+      return null;
+    }
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? null : trimmed;
+  }
+  function loadProviderProfileSettingsFromPrefs(prefs) {
+    const ollama = loadOllamaSettingsFromPrefs(prefs);
+    const chatProvider = parseChatProvider(readNonEmpty2(prefs, CHAT_PROVIDER_PREF));
+    const embedProvider = parseEmbedProvider(readNonEmpty2(prefs, EMBED_PROVIDER_PREF));
+    return {
+      ollama,
+      chatProvider,
+      embedProvider,
+      openaiApiKey: "",
+      anthropicApiKey: "",
+      geminiApiKey: ""
+    };
+  }
+  function saveProviderProfileSettingsToPrefs(writer, settings) {
+    saveOllamaSettingsToPrefs(writer, settings.ollama);
+    writer.set(CHAT_PROVIDER_PREF, settings.chatProvider);
+    writer.set(EMBED_PROVIDER_PREF, settings.embedProvider);
+  }
+  function providerProfileToDisclosure(settings) {
+    const model = settings.ollama.chatModel;
+    switch (settings.chatProvider) {
+      case "ollama":
+        return { displayName: "Ollama", model, sendMode: "local" };
+      case "codex-cli":
+        return { displayName: "Codex Proxy", model, sendMode: "remote" };
+      case "claude-cli":
+        return { displayName: "Claude Proxy", model, sendMode: "remote" };
+      case "codex-api":
+        return { displayName: "OpenAI", model, sendMode: "remote" };
+      case "claude-api":
+        return { displayName: "Anthropic", model, sendMode: "remote" };
+    }
+  }
+
+  // src/secrets/secure-provider-profile.ts
+  var keys = [
+    ["openai", "openaiApiKey", OPENAI_API_KEY_PREF],
+    ["anthropic", "anthropicApiKey", ANTHROPIC_API_KEY_PREF],
+    ["gemini", "geminiApiKey", GEMINI_API_KEY_PREF]
+  ];
+  function createSecureProviderProfileStore(deps) {
+    const cache = { openaiApiKey: "", anthropicApiKey: "", geminiApiKey: "" };
+    let problem = "";
+    let pending = Promise.resolve();
+    function clearLegacy(pref) {
+      if (deps.writer.clear !== void 0) deps.writer.clear(pref);
+      else deps.writer.set(pref, "");
+    }
+    function validate(secret) {
+      const value = secret.trim();
+      if (value.length > 1280 || Array.from(value).some(
+        (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127
+      )) {
+        throw new Error(
+          "API keys must be at most 1280 characters and contain no whitespace or control characters."
+        );
+      }
+      return value;
+    }
+    return {
+      async initialize() {
+        for (const [provider, field, pref] of keys) {
+          try {
+            const stored = await deps.credentials.get(provider);
+            const legacy = deps.prefs.get(pref)?.trim() ?? "";
+            if (stored !== null) {
+              cache[field] = stored;
+              if (legacy !== "") clearLegacy(pref);
+            } else if (legacy !== "") {
+              const value = validate(legacy);
+              await deps.credentials.set(provider, value);
+              if (await deps.credentials.get(provider) !== value) {
+                throw new Error("Credential verification failed.");
+              }
+              cache[field] = value;
+              clearLegacy(pref);
+            }
+          } catch {
+            problem = " Secure storage could not be loaded or legacy migration could not finish. Unlock your credential store and restart Zotero. Unmigrated legacy keys remain in preferences.";
+            break;
+          }
+        }
+      },
+      read() {
+        return { ...loadProviderProfileSettingsFromPrefs(deps.prefs), ...cache };
+      },
+      message() {
+        return `API keys are saved in ${deps.storageName}, never in Zotero preferences. Clear a key field and Save to remove its stored credential. ` + (deps.storageName.includes("Linux") ? "Requires libsecret and a running, unlocked Secret Service keyring. " : "") + problem;
+      },
+      save(settings) {
+        const task = pending.then(async () => {
+          const values = keys.map(([, field]) => validate(settings[field]));
+          for (const [index, [, , pref]] of keys.entries()) {
+            if (values[index] === "" && (deps.prefs.get(pref)?.trim() ?? "") !== "") {
+              throw new Error(
+                "A legacy API key has not migrated. Unlock secure storage and restart Zotero."
+              );
+            }
+          }
+          const previous = /* @__PURE__ */ new Map();
+          const attempted = [];
+          try {
+            for (const [index, [provider, field]] of keys.entries()) {
+              const value = values[index] ?? "";
+              if (value !== cache[field]) {
+                previous.set(provider, await deps.credentials.get(provider));
+                attempted.push(provider);
+                if (value === "") await deps.credentials.delete(provider);
+                else await deps.credentials.set(provider, value);
+                if (await deps.credentials.get(provider) !== (value === "" ? null : value)) {
+                  throw new Error("Credential verification failed; settings were not saved.");
+                }
+              }
+            }
+          } catch {
+            let rollbackFailed = false;
+            for (const provider of attempted.reverse()) {
+              try {
+                const old = previous.get(provider) ?? null;
+                if (old === null) await deps.credentials.delete(provider);
+                else await deps.credentials.set(provider, old);
+                if (await deps.credentials.get(provider) !== old) rollbackFailed = true;
+              } catch {
+                rollbackFailed = true;
+              }
+            }
+            throw new Error(
+              rollbackFailed ? "Secure key save failed and previous keys could not be fully restored. Unlock your credential store and restart Zotero before retrying." : "Secure key save failed. Check that your credential store is installed, running, and unlocked. No keys were written to preferences."
+            );
+          }
+          for (const [index, [, field]] of keys.entries()) cache[field] = values[index] ?? "";
+          try {
+            saveProviderProfileSettingsToPrefs(deps.writer, settings);
+            for (const [, , pref] of keys) clearLegacy(pref);
+          } catch {
+            throw new Error(
+              "API keys were saved securely, but Zotero preferences could not be updated or legacy keys could not be cleared. Restart Zotero and check settings before retrying."
+            );
+          }
+          problem = "";
+        });
+        pending = task.catch(() => void 0);
+        return task;
+      }
+    };
+  }
+
   // src/platform/token-dump.ts
   var TOKEN_NAMES = [
     "--material-background",
@@ -7244,152 +7926,6 @@ Question: First question about the passage?`
     return scored.slice(0, k).map((chunk, index) => ({ ...chunk, chunkIndex: index }));
   }
 
-  // src/preferences/ollama-profile.ts
-  var OLLAMA_BASE_URL_PREF = "extensions.zotero-ai-explain.ollama-base-url";
-  var CHAT_BASE_URL_PREF = "extensions.zotero-ai-explain.chat-base-url";
-  var EMBED_BASE_URL_PREF = "extensions.zotero-ai-explain.embed-base-url";
-  var CHAT_MODEL_PREF = "extensions.zotero-ai-explain.chat-model";
-  var EMBEDDING_MODEL_PREF = "extensions.zotero-ai-explain.embedding-model";
-  var DEFAULT_BASE_URL = "http://localhost:11434";
-  function createDefaultOllamaSettings() {
-    return {
-      baseUrl: DEFAULT_BASE_URL,
-      chatBaseUrl: DEFAULT_BASE_URL,
-      embedBaseUrl: DEFAULT_BASE_URL,
-      chatModel: "gemma4:e4b",
-      embeddingModel: "embeddinggemma",
-      localOnly: true
-    };
-  }
-  function ollamaSettingsToProfile(settings) {
-    return {
-      id: "ollama",
-      displayName: "Ollama",
-      kind: "ollama",
-      // The ProviderProfile feeds chat traffic; use the chat URL so the
-      // user can route chat through the local llm-proxy / codex while
-      // keeping embeddings on a real Ollama daemon.
-      baseUrl: settings.chatBaseUrl,
-      model: settings.chatModel,
-      secret: { kind: "none" },
-      sendMode: "local",
-      enabled: true
-    };
-  }
-  function loadOllamaSettingsFromPrefs(prefs) {
-    const defaults = createDefaultOllamaSettings();
-    const legacyBaseUrl = readNonEmpty(prefs, OLLAMA_BASE_URL_PREF);
-    const chatBaseUrl = readNonEmpty(prefs, CHAT_BASE_URL_PREF);
-    const embedBaseUrl = readNonEmpty(prefs, EMBED_BASE_URL_PREF);
-    const chatModel = readNonEmpty(prefs, CHAT_MODEL_PREF);
-    const embeddingModel = readNonEmpty(prefs, EMBEDDING_MODEL_PREF);
-    const resolvedBaseUrl = legacyBaseUrl ?? defaults.baseUrl;
-    return {
-      baseUrl: resolvedBaseUrl,
-      chatBaseUrl: chatBaseUrl ?? legacyBaseUrl ?? defaults.chatBaseUrl,
-      embedBaseUrl: embedBaseUrl ?? legacyBaseUrl ?? defaults.embedBaseUrl,
-      chatModel: chatModel ?? defaults.chatModel,
-      embeddingModel: embeddingModel ?? defaults.embeddingModel,
-      localOnly: defaults.localOnly
-    };
-  }
-  function saveOllamaSettingsToPrefs(writer, settings) {
-    const chat = settings.chatBaseUrl.trim();
-    const embed = settings.embedBaseUrl.trim();
-    const legacy = settings.baseUrl.trim().length > 0 ? settings.baseUrl.trim() : chat;
-    writer.set(OLLAMA_BASE_URL_PREF, legacy);
-    writer.set(CHAT_BASE_URL_PREF, chat);
-    writer.set(EMBED_BASE_URL_PREF, embed);
-    writer.set(CHAT_MODEL_PREF, settings.chatModel.trim());
-    writer.set(EMBEDDING_MODEL_PREF, settings.embeddingModel.trim());
-  }
-  function readNonEmpty(prefs, name) {
-    let value;
-    try {
-      value = prefs.get(name);
-    } catch {
-      return null;
-    }
-    if (typeof value !== "string") {
-      return null;
-    }
-    const trimmed = value.trim();
-    return trimmed.length === 0 ? null : trimmed;
-  }
-
-  // src/preferences/provider-profile.ts
-  var CHAT_PROVIDER_PREF = "extensions.zotero-ai-explain.chat-provider";
-  var EMBED_PROVIDER_PREF = "extensions.zotero-ai-explain.embed-provider";
-  var OPENAI_API_KEY_PREF = "extensions.zotero-ai-explain.openai-api-key";
-  var ANTHROPIC_API_KEY_PREF = "extensions.zotero-ai-explain.anthropic-api-key";
-  var GEMINI_API_KEY_PREF = "extensions.zotero-ai-explain.gemini-api-key";
-  var CHAT_PROVIDER_KINDS = [
-    "ollama",
-    "codex-cli",
-    "claude-cli",
-    "codex-api",
-    "claude-api"
-  ];
-  var EMBED_PROVIDER_KINDS = ["ollama", "openai", "gemini"];
-  function parseChatProvider(value) {
-    if (value === null) return "ollama";
-    return CHAT_PROVIDER_KINDS.includes(value) ? value : "ollama";
-  }
-  function parseEmbedProvider(value) {
-    if (value === null) return "ollama";
-    return EMBED_PROVIDER_KINDS.includes(value) ? value : "ollama";
-  }
-  function readNonEmpty2(prefs, name) {
-    let value;
-    try {
-      value = prefs.get(name);
-    } catch {
-      return null;
-    }
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    return trimmed.length === 0 ? null : trimmed;
-  }
-  function loadProviderProfileSettingsFromPrefs(prefs) {
-    const ollama = loadOllamaSettingsFromPrefs(prefs);
-    const chatProvider = parseChatProvider(readNonEmpty2(prefs, CHAT_PROVIDER_PREF));
-    const embedProvider = parseEmbedProvider(readNonEmpty2(prefs, EMBED_PROVIDER_PREF));
-    const openaiApiKey = readNonEmpty2(prefs, OPENAI_API_KEY_PREF) ?? "";
-    const anthropicApiKey = readNonEmpty2(prefs, ANTHROPIC_API_KEY_PREF) ?? "";
-    const geminiApiKey = readNonEmpty2(prefs, GEMINI_API_KEY_PREF) ?? "";
-    return {
-      ollama,
-      chatProvider,
-      embedProvider,
-      openaiApiKey,
-      anthropicApiKey,
-      geminiApiKey
-    };
-  }
-  function saveProviderProfileSettingsToPrefs(writer, settings) {
-    saveOllamaSettingsToPrefs(writer, settings.ollama);
-    writer.set(CHAT_PROVIDER_PREF, settings.chatProvider);
-    writer.set(EMBED_PROVIDER_PREF, settings.embedProvider);
-    writer.set(OPENAI_API_KEY_PREF, settings.openaiApiKey.trim());
-    writer.set(ANTHROPIC_API_KEY_PREF, settings.anthropicApiKey.trim());
-    writer.set(GEMINI_API_KEY_PREF, settings.geminiApiKey.trim());
-  }
-  function providerProfileToDisclosure(settings) {
-    const model = settings.ollama.chatModel;
-    switch (settings.chatProvider) {
-      case "ollama":
-        return { displayName: "Ollama", model, sendMode: "local" };
-      case "codex-cli":
-        return { displayName: "Codex Proxy", model, sendMode: "remote" };
-      case "claude-cli":
-        return { displayName: "Claude Proxy", model, sendMode: "remote" };
-      case "codex-api":
-        return { displayName: "OpenAI", model, sendMode: "remote" };
-      case "claude-api":
-        return { displayName: "Anthropic", model, sendMode: "remote" };
-    }
-  }
-
   // src/platform/zotero-runtime.ts
   init_index_controls_view();
   init_model_discovery();
@@ -8089,10 +8625,13 @@ Question: ${raw.trim()}`
       return false;
     }
     function openSettingsDialog() {
+      if (deps.readProviderProfile !== void 0) currentProviderProfile = deps.readProviderProfile();
+      const displayedProviderProfile = currentProviderProfile;
       const proxySnapshot = deps.proxy?.snapshot();
       const view = renderSettingsView({
         settings: currentSettings,
         indexStatus: deps.indexingController.getStatus(),
+        credentialStorageMessage: deps.credentialStorageMessage?.() ?? "Secure key storage is unavailable. API keys cannot be saved in this host.",
         ...proxySnapshot !== void 0 ? { proxy: proxySnapshot } : {},
         ...currentProviderProfile !== void 0 ? { providerProfile: currentProviderProfile } : {}
       });
@@ -8118,7 +8657,7 @@ Question: ${raw.trim()}`
             })
           }
         } : {},
-        onSave: (values) => {
+        onSave: async (values) => {
           const next = {
             // Legacy mirror — the writer derives the legacy
             // `ollama-base-url` pref from this. Chat is the right default
@@ -8133,26 +8672,31 @@ Question: ${raw.trim()}`
             // whatever the current settings carry.
             localOnly: currentSettings.localOnly
           };
-          if (deps.prefsWriter !== void 0) {
-            saveOllamaSettingsToPrefs(deps.prefsWriter, next);
-          }
-          currentSettings = next;
-          deps.onSettingsChange?.(next);
-          if (currentProviderProfile !== void 0) {
+          if (currentProviderProfile !== void 0 && displayedProviderProfile !== void 0) {
+            const latestProfile = deps.readProviderProfile?.() ?? currentProviderProfile;
             const nextProfile = {
               ollama: next,
               chatProvider: values.chatProvider ?? currentProviderProfile.chatProvider,
               embedProvider: values.embedProvider ?? currentProviderProfile.embedProvider,
-              openaiApiKey: values.openaiApiKey ?? currentProviderProfile.openaiApiKey,
-              anthropicApiKey: values.anthropicApiKey ?? currentProviderProfile.anthropicApiKey,
-              geminiApiKey: values.geminiApiKey ?? currentProviderProfile.geminiApiKey
+              openaiApiKey: values.openaiApiKey === void 0 || values.openaiApiKey === displayedProviderProfile.openaiApiKey ? latestProfile.openaiApiKey : values.openaiApiKey,
+              anthropicApiKey: values.anthropicApiKey === void 0 || values.anthropicApiKey === displayedProviderProfile.anthropicApiKey ? latestProfile.anthropicApiKey : values.anthropicApiKey,
+              geminiApiKey: values.geminiApiKey === void 0 || values.geminiApiKey === displayedProviderProfile.geminiApiKey ? latestProfile.geminiApiKey : values.geminiApiKey
             };
-            if (deps.prefsWriter !== void 0) {
+            if (deps.saveProviderProfile !== void 0) {
+              await deps.saveProviderProfile(nextProfile);
+            } else if (nextProfile.openaiApiKey !== "" || nextProfile.anthropicApiKey !== "" || nextProfile.geminiApiKey !== "") {
+              throw new Error("Secure key storage is unavailable. API keys were not saved.");
+            } else if (deps.prefsWriter !== void 0) {
               saveProviderProfileSettingsToPrefs(deps.prefsWriter, nextProfile);
             }
             currentProviderProfile = nextProfile;
             deps.onProviderProfileChange?.(nextProfile);
           }
+          if (deps.prefsWriter !== void 0) {
+            saveOllamaSettingsToPrefs(deps.prefsWriter, next);
+          }
+          currentSettings = next;
+          deps.onSettingsChange?.(next);
         },
         close: () => {
           detachIndex();
@@ -8684,12 +9228,153 @@ Question: ${raw.trim()}`
     };
   }
 
+  // src/providers/adapters/openai-chat.ts
+  var ENDPOINT2 = "https://api.openai.com/v1/chat/completions";
+  async function readErrorMessage2(response) {
+    let raw = "";
+    try {
+      raw = await response.text();
+    } catch {
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length > 0) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (isRecord(parsed) && isRecord(parsed.error)) {
+          const message = parsed.error.message;
+          if (typeof message === "string" && message.length > 0) {
+            return message;
+          }
+        }
+      } catch {
+      }
+      return trimmed;
+    }
+    const statusText = response.statusText.length > 0 ? ` ${response.statusText}` : "";
+    return `HTTP ${String(response.status)}${statusText}`;
+  }
+  function isRetryableStatus2(status) {
+    return status === 429 || status >= 500 && status <= 599;
+  }
+  function createOpenAIChatProvider(deps) {
+    const id = "openai-chat";
+    return {
+      id,
+      displayName: "OpenAI (direct)",
+      async *streamChat(request, signal) {
+        yield { type: "message_start", providerId: id, model: request.profile.model };
+        const apiKey = deps.getApiKey();
+        if (apiKey === null || apiKey.length === 0) {
+          yield {
+            type: "error",
+            message: "OpenAI API key is not configured. Add it in Settings.",
+            retryable: false
+          };
+          return;
+        }
+        let response;
+        try {
+          response = await deps.fetch(ENDPOINT2, {
+            method: "POST",
+            signal,
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: request.profile.model,
+              stream: true,
+              messages: request.messages
+            })
+          });
+        } catch (err) {
+          if (signal.aborted) {
+            throw err;
+          }
+          yield {
+            type: "error",
+            message: `Could not reach OpenAI: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: true
+          };
+          return;
+        }
+        if (!response.ok) {
+          const detail = await readErrorMessage2(response);
+          const event = {
+            type: "error",
+            message: `OpenAI error (${String(response.status)}): ${detail}`,
+            retryable: isRetryableStatus2(response.status)
+          };
+          yield event;
+          return;
+        }
+        const body = response.body;
+        if (body === null) {
+          yield messageEndEvent();
+          return;
+        }
+        const reader = body.getReader();
+        try {
+          for await (const payload of readSsePayloads(reader)) {
+            const text = readString(payload, ["choices", "0", "delta", "content"]);
+            if (text !== null) {
+              yield eventFromDelta(text);
+            }
+          }
+        } catch (err) {
+          if (signal.aborted) {
+            throw err;
+          }
+          yield {
+            type: "error",
+            message: `OpenAI stream parse failed: ${err instanceof Error ? err.message : String(err)}`,
+            retryable: false
+          };
+          return;
+        }
+        yield messageEndEvent();
+      }
+    };
+  }
+
+  // src/providers/live-chat-provider.ts
+  function createLiveChatProvider(deps) {
+    return {
+      id: "configured-chat",
+      displayName: "Configured chat provider",
+      async *streamChat(request, signal) {
+        const settings = deps.readProviderProfile();
+        let provider;
+        switch (settings.chatProvider) {
+          case "codex-api":
+            provider = createOpenAIChatProvider({
+              fetch: deps.fetch,
+              getApiKey: () => settings.openaiApiKey || null
+            });
+            break;
+          case "claude-api":
+            provider = createClaudeApiProvider({
+              fetch: deps.fetch,
+              getApiKey: () => settings.anthropicApiKey || null
+            });
+            break;
+          default:
+            provider = deps.ollamaProvider;
+        }
+        yield* provider.streamChat(
+          { ...request, profile: ollamaSettingsToProfile(settings.ollama) },
+          signal
+        );
+      }
+    };
+  }
+
   // src/providers/adapters/gemini-embed.ts
   var ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
   function withModelsPrefix(model) {
     return model.startsWith("models/") ? model : `models/${model}`;
   }
-  async function readErrorMessage2(response) {
+  async function readErrorMessage3(response) {
     let raw = "";
     try {
       raw = await response.text();
@@ -8753,7 +9438,7 @@ Question: ${raw.trim()}`
           body: JSON.stringify(body)
         });
         if (!response.ok) {
-          const detail = await readErrorMessage2(response);
+          const detail = await readErrorMessage3(response);
           throw new Error(`Gemini embed error (${String(response.status)}): ${detail}`);
         }
         let payload;
@@ -8845,7 +9530,7 @@ Question: ${raw.trim()}`
     }
     return null;
   }
-  async function readErrorMessage3(response) {
+  async function readErrorMessage4(response) {
     let raw = "";
     try {
       raw = await response.text();
@@ -8886,7 +9571,7 @@ Question: ${raw.trim()}`
             })
           });
           if (!response.ok) {
-            const detail = await readErrorMessage3(response);
+            const detail = await readErrorMessage4(response);
             yield {
               type: "error",
               message: `Ollama error: ${detail}`,
@@ -8938,7 +9623,7 @@ Question: ${raw.trim()}`
           body: JSON.stringify({ model: request.model, input: request.texts })
         });
         if (!response.ok) {
-          const detail = await readErrorMessage3(response);
+          const detail = await readErrorMessage4(response);
           throw new Error(`Ollama error: ${detail}`);
         }
         return readEmbeddings2(parseJsonPayload(await response.text()));
@@ -9047,115 +9732,6 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
       }
     }
     return null;
-  }
-
-  // src/providers/adapters/openai-chat.ts
-  var ENDPOINT2 = "https://api.openai.com/v1/chat/completions";
-  async function readErrorMessage4(response) {
-    let raw = "";
-    try {
-      raw = await response.text();
-    } catch {
-    }
-    const trimmed = raw.trim();
-    if (trimmed.length > 0) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (isRecord(parsed) && isRecord(parsed.error)) {
-          const message = parsed.error.message;
-          if (typeof message === "string" && message.length > 0) {
-            return message;
-          }
-        }
-      } catch {
-      }
-      return trimmed;
-    }
-    const statusText = response.statusText.length > 0 ? ` ${response.statusText}` : "";
-    return `HTTP ${String(response.status)}${statusText}`;
-  }
-  function isRetryableStatus2(status) {
-    return status === 429 || status >= 500 && status <= 599;
-  }
-  function createOpenAIChatProvider(deps) {
-    const id = "openai-chat";
-    return {
-      id,
-      displayName: "OpenAI (direct)",
-      async *streamChat(request, signal) {
-        yield { type: "message_start", providerId: id, model: request.profile.model };
-        const apiKey = deps.getApiKey();
-        if (apiKey === null || apiKey.length === 0) {
-          yield {
-            type: "error",
-            message: "OpenAI API key is not configured. Add it in Settings.",
-            retryable: false
-          };
-          return;
-        }
-        let response;
-        try {
-          response = await deps.fetch(ENDPOINT2, {
-            method: "POST",
-            signal,
-            headers: {
-              "content-type": "application/json",
-              authorization: `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: request.profile.model,
-              stream: true,
-              messages: request.messages
-            })
-          });
-        } catch (err) {
-          if (signal.aborted) {
-            throw err;
-          }
-          yield {
-            type: "error",
-            message: `Could not reach OpenAI: ${err instanceof Error ? err.message : String(err)}`,
-            retryable: true
-          };
-          return;
-        }
-        if (!response.ok) {
-          const detail = await readErrorMessage4(response);
-          const event = {
-            type: "error",
-            message: `OpenAI error (${String(response.status)}): ${detail}`,
-            retryable: isRetryableStatus2(response.status)
-          };
-          yield event;
-          return;
-        }
-        const body = response.body;
-        if (body === null) {
-          yield messageEndEvent();
-          return;
-        }
-        const reader = body.getReader();
-        try {
-          for await (const payload of readSsePayloads(reader)) {
-            const text = readString(payload, ["choices", "0", "delta", "content"]);
-            if (text !== null) {
-              yield eventFromDelta(text);
-            }
-          }
-        } catch (err) {
-          if (signal.aborted) {
-            throw err;
-          }
-          yield {
-            type: "error",
-            message: `OpenAI stream parse failed: ${err instanceof Error ? err.message : String(err)}`,
-            retryable: false
-          };
-          return;
-        }
-        yield messageEndEvent();
-      }
-    };
   }
 
   // src/providers/adapters/openai-embed.ts
@@ -10345,31 +10921,6 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
       }
     };
   }
-  function buildChatProvider(deps) {
-    const { fetch: fetchFn, providerProfile, readProviderProfile, ollamaProvider } = deps;
-    switch (providerProfile.chatProvider) {
-      case "ollama":
-      case "codex-cli":
-      case "claude-cli":
-        return ollamaProvider;
-      case "codex-api":
-        return createOpenAIChatProvider({
-          fetch: fetchFn,
-          getApiKey: () => {
-            const latest = readProviderProfile();
-            return latest.openaiApiKey.length > 0 ? latest.openaiApiKey : null;
-          }
-        });
-      case "claude-api":
-        return createClaudeApiProvider({
-          fetch: fetchFn,
-          getApiKey: () => {
-            const latest = readProviderProfile();
-            return latest.anthropicApiKey.length > 0 ? latest.anthropicApiKey : null;
-          }
-        });
-    }
-  }
   function buildEmbeddingProvider(deps) {
     const { fetch: fetchFn, providerProfile, readProviderProfile, ollamaProvider } = deps;
     switch (providerProfile.embedProvider) {
@@ -10414,7 +10965,14 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
     const getProfile = () => ollamaSettingsToProfile(loadOllamaSettings(zotero));
     const store = createConversationStore();
     const prefReader = asStringPrefReader(zotero.Prefs);
-    const readProviderProfile = () => loadProviderProfileSettingsFromPrefs(prefReader);
+    const systemCredentials = createSystemCredentialStore();
+    const secureProfiles = createSecureProviderProfileStore({
+      prefs: prefReader,
+      writer: asStringPrefWriter(zotero.Prefs),
+      ...systemCredentials
+    });
+    await secureProfiles.initialize();
+    const readProviderProfile = () => secureProfiles.read();
     const providerProfile = readProviderProfile();
     context.Zotero.debug(
       `Zotero AI Explain provider config: chat=${providerProfile.chatProvider} embed=${providerProfile.embedProvider}`
@@ -10441,9 +10999,8 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
     });
     const registry = createProviderRegistry([ollamaProvider]);
     const fetchForAdapters = boundFetch;
-    const provider = buildChatProvider({
+    const provider = createLiveChatProvider({
       fetch: fetchForAdapters,
-      providerProfile,
       readProviderProfile,
       ollamaProvider
     });
@@ -10601,6 +11158,9 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
       zotero: context.Zotero,
       popupRetrievalChannel,
       providerProfile,
+      saveProviderProfile: (next) => secureProfiles.save(next),
+      readProviderProfile,
+      credentialStorageMessage: () => secureProfiles.message(),
       // Thread the proxy bearer closure into the runtime so the Save-
       // button URL probe AND the live model-discovery dropdown attach
       // `Authorization: Bearer <token>` when targeting the bundled
@@ -10610,7 +11170,7 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
       getProxyAuthHeader,
       onProviderProfileChange: (next) => {
         context.Zotero.debug(
-          `Zotero AI Explain provider profile saved: chat=${next.chatProvider} embed=${next.embedProvider}. New providers take effect after a Zotero restart.`
+          `Zotero AI Explain provider profile saved: chat=${next.chatProvider} embed=${next.embedProvider}. Chat changes apply to the next request. Embedding changes require a Zotero restart.`
         );
       },
       // exactOptionalPropertyTypes: assign undefined only when fetch
@@ -10638,7 +11198,7 @@ Each excerpt is labelled with a token of the form [itemKey#chunkIndex]. When you
       })() : {},
       onSettingsChange: (next) => {
         context.Zotero.debug(
-          `Zotero AI Explain settings saved: baseUrl=${next.baseUrl} chatModel=${next.chatModel} embeddingModel=${next.embeddingModel}. New values take effect after a Zotero restart.`
+          `Zotero AI Explain settings saved: baseUrl=${next.baseUrl} chatModel=${next.chatModel} embeddingModel=${next.embeddingModel}. Chat changes apply to the next request. Embedding changes require a Zotero restart.`
         );
       }
     });

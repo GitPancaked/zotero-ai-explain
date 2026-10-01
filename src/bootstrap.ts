@@ -4,6 +4,8 @@ import { createIndexingController } from "./indexing/indexing-controller.js";
 import type { LibraryCrawlerDeps } from "./indexing/library-crawler.js";
 import { openCitationInReader, type CitationReaderZotero } from "./platform/citation-open.js";
 import { runE2eDriver } from "./platform/e2e-driver.js";
+import { createSystemCredentialStore } from "./platform/system-credential-store.js";
+import { createSecureProviderProfileStore } from "./secrets/secure-provider-profile.js";
 import type { SubprocessLike } from "./platform/proxy-lifecycle.js";
 import { dumpZoteroTokens } from "./platform/token-dump.js";
 import { wireProxyLifecycle, type WiredProxy } from "./platform/wire-proxy-lifecycle.js";
@@ -22,28 +24,22 @@ import {
 } from "./preferences/ollama-profile.js";
 import { markOnboardingShown, readOnboardingShown } from "./preferences/onboarding-state.js";
 import {
-  loadProviderProfileSettingsFromPrefs,
   providerProfileToDisclosure,
   type ProviderProfileSettings
 } from "./preferences/provider-profile.js";
-import { createClaudeApiProvider } from "./providers/adapters/claude-api.js";
+import { createLiveChatProvider } from "./providers/live-chat-provider.js";
 import {
   GEMINI_EMBED_DIMENSIONS,
   createGeminiEmbedProvider
 } from "./providers/adapters/gemini-embed.js";
 import { createOllamaProvider } from "./providers/adapters/ollama.js";
 import { createRagAugmentedProvider } from "./providers/rag-augmented-provider.js";
-import { createOpenAIChatProvider } from "./providers/adapters/openai-chat.js";
 import {
   OPENAI_EMBED_DIMENSIONS,
   createOpenAIEmbedProvider
 } from "./providers/adapters/openai-embed.js";
 import { createProviderRegistry } from "./providers/provider-registry.js";
-import type {
-  EmbeddingProvider,
-  ModelProvider,
-  ProviderProfile
-} from "./providers/provider-types.js";
+import type { EmbeddingProvider, ProviderProfile } from "./providers/provider-types.js";
 import {
   detectPlatform,
   probeOllamaForOnboarding,
@@ -1145,50 +1141,7 @@ function makeChromeReadTextFile(zotero: ZoteroGlobal): (path: string) => string 
 }
 
 /**
- * Build the chat provider based on the active settings. The returned
- * ModelProvider drives the popup + sidebar streamChat path. For
- * URL-based providers (Ollama / proxy-routed CLI providers) we reuse
- * `createOllamaProvider` because the proxy uses Ollama's wire format
- * for forwarding; for direct-API providers we build the OpenAI / Claude
- * adapters with a getApiKey closure that reads the latest pref each
- * call (so a save-then-chat flow uses the new key without a restart).
- */
-function buildChatProvider(deps: {
-  readonly fetch: (input: string, init: RequestInit) => Promise<Response>;
-  readonly providerProfile: ProviderProfileSettings;
-  readonly readProviderProfile: () => ProviderProfileSettings;
-  readonly ollamaProvider: ReturnType<typeof createOllamaProvider>;
-}): ModelProvider {
-  const { fetch: fetchFn, providerProfile, readProviderProfile, ollamaProvider } = deps;
-  switch (providerProfile.chatProvider) {
-    case "ollama":
-    case "codex-cli":
-    case "claude-cli":
-      // The proxy speaks Ollama's wire format so the CLI providers
-      // route through the same adapter; the user's `chatBaseUrl` field
-      // points at the proxy when needed.
-      return ollamaProvider;
-    case "codex-api":
-      return createOpenAIChatProvider({
-        fetch: fetchFn,
-        getApiKey: () => {
-          const latest = readProviderProfile();
-          return latest.openaiApiKey.length > 0 ? latest.openaiApiKey : null;
-        }
-      });
-    case "claude-api":
-      return createClaudeApiProvider({
-        fetch: fetchFn,
-        getApiKey: () => {
-          const latest = readProviderProfile();
-          return latest.anthropicApiKey.length > 0 ? latest.anthropicApiKey : null;
-        }
-      });
-  }
-}
-
-/**
- * Build the embedding provider. Mirrors `buildChatProvider`: Ollama
+ * Build the embedding provider. Alongside the live chat provider: Ollama
  * routes through the existing local adapter; OpenAI/Gemini build
  * direct-API adapters with expectedDimensions cross-checks so a typo
  * in the model name surfaces as a dim-mismatch error instead of
@@ -1265,8 +1218,14 @@ export async function startup(context: ZoteroBootstrapContext): Promise<void> {
   // by the adapter closures so a user-saved API key takes effect on the
   // very next request without requiring a Zotero restart.
   const prefReader = asStringPrefReader(zotero.Prefs);
-  const readProviderProfile = (): ProviderProfileSettings =>
-    loadProviderProfileSettingsFromPrefs(prefReader);
+  const systemCredentials = createSystemCredentialStore();
+  const secureProfiles = createSecureProviderProfileStore({
+    prefs: prefReader,
+    writer: asStringPrefWriter(zotero.Prefs),
+    ...systemCredentials
+  });
+  await secureProfiles.initialize();
+  const readProviderProfile = (): ProviderProfileSettings => secureProfiles.read();
   const providerProfile = readProviderProfile();
   context.Zotero.debug(
     `Zotero AI Explain provider config: chat=${providerProfile.chatProvider} embed=${providerProfile.embedProvider}`
@@ -1312,17 +1271,14 @@ export async function startup(context: ZoteroBootstrapContext): Promise<void> {
     getProxyAuthHeader
   });
   const registry = createProviderRegistry([ollamaProvider]);
-  // Resolve the prior single-chat-provider for the popup / sidebar
-  // entry points. Direct-API providers replace `provider` with the
-  // OpenAI/Claude adapter; URL-based providers continue to use the
-  // ollama adapter (which is what the proxy expects on the wire).
+  // Share a live chat router across popup, sidebar, and library chat.
+  // Each new stream snapshots the saved backend, URL, model, and key.
   const fetchForAdapters = boundFetch as unknown as (
     input: string,
     init: RequestInit
   ) => Promise<Response>;
-  const provider = buildChatProvider({
+  const provider = createLiveChatProvider({
     fetch: fetchForAdapters,
-    providerProfile,
     readProviderProfile,
     ollamaProvider
   });
@@ -1538,6 +1494,9 @@ export async function startup(context: ZoteroBootstrapContext): Promise<void> {
     zotero: context.Zotero,
     popupRetrievalChannel,
     providerProfile,
+    saveProviderProfile: (next) => secureProfiles.save(next),
+    readProviderProfile,
+    credentialStorageMessage: () => secureProfiles.message(),
     // Thread the proxy bearer closure into the runtime so the Save-
     // button URL probe AND the live model-discovery dropdown attach
     // `Authorization: Bearer <token>` when targeting the bundled
@@ -1547,7 +1506,7 @@ export async function startup(context: ZoteroBootstrapContext): Promise<void> {
     getProxyAuthHeader,
     onProviderProfileChange: (next) => {
       context.Zotero.debug(
-        `Zotero AI Explain provider profile saved: chat=${next.chatProvider} embed=${next.embedProvider}. New providers take effect after a Zotero restart.`
+        `Zotero AI Explain provider profile saved: chat=${next.chatProvider} embed=${next.embedProvider}. Chat changes apply to the next request. Embedding changes require a Zotero restart.`
       );
     },
     // exactOptionalPropertyTypes: assign undefined only when fetch
@@ -1576,14 +1535,11 @@ export async function startup(context: ZoteroBootstrapContext): Promise<void> {
         })()
       : {}),
     onSettingsChange: (next) => {
-      // The persisted prefs take effect on the next plugin startup
-      // (when `loadOllamaSettingsFromPrefs` reads them back). The
-      // already-constructed provider + indexing controller hold the
-      // values from this session; we log the new ones so the user can
-      // confirm in the Browser Console that the write happened.
+      // Chat reads saved settings for every new request. The indexing
+      // controller retains its embedding settings until the next startup.
       context.Zotero.debug(
         `Zotero AI Explain settings saved: baseUrl=${next.baseUrl} chatModel=${next.chatModel} ` +
-          `embeddingModel=${next.embeddingModel}. New values take effect after a Zotero restart.`
+          `embeddingModel=${next.embeddingModel}. Chat changes apply to the next request. Embedding changes require a Zotero restart.`
       );
     }
   });

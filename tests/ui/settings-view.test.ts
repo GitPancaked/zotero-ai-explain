@@ -361,7 +361,9 @@ describe("wireSettingsView Save flow", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(closeCalled).toBe(true);
+    await vi.waitFor(() => {
+      expect(closeCalled).toBe(true);
+    });
     expect(statusAtClose).toBe("Saved");
   });
 
@@ -804,7 +806,7 @@ describe("renderSettingsView providerProfile section", () => {
     expect(view.querySelector("details.zotero-ai-advanced")).toBeNull();
   });
 
-  it("warns the user that API keys are stored locally in plain text", () => {
+  it("explains that API keys require OS secure storage", () => {
     const view = renderSettingsView({
       settings: createDefaultOllamaSettings(),
       indexStatus: { state: "idle", totalItems: 0, indexedItems: 0, failedItems: 0 },
@@ -818,7 +820,7 @@ describe("renderSettingsView providerProfile section", () => {
       }
     });
     const warning = view.querySelector<HTMLElement>(".zotero-ai-providers__warning");
-    expect(warning?.textContent ?? "").toMatch(/plain text/iu);
+    expect(warning?.textContent ?? "").toMatch(/OS secure storage/iu);
   });
 });
 

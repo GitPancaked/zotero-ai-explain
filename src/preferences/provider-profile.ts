@@ -8,10 +8,9 @@
  * default to `"ollama"`, mirroring the prior behavior.
  *
  * Storage:
- *   API keys live in plain text under the Zotero pref tree
- *   (`extensions.zotero-ai-explain.*-api-key`). Zotero's prefs.js lives
- *   inside the OS-secured user profile; we surface a warning in the
- *   settings UI so the user knows.
+ *   Preferences contain non-secret settings only. API keys are supplied
+ *   in memory by the OS credential-store integration. Legacy key prefs
+ *   are read only by the migration path.
  */
 
 import type { OllamaSettings, StringPrefReader, StringPrefWriter } from "./ollama-profile.js";
@@ -32,7 +31,7 @@ export type ProviderProfileSettings = {
   readonly chatProvider: ChatProviderKind;
   /** Which backend handles embeddings. */
   readonly embedProvider: EmbedProviderKind;
-  /** Per-provider API keys. Stored verbatim; empty string == "absent". */
+  /** Per-provider API keys in memory; empty string == "absent". */
   readonly openaiApiKey: string;
   readonly anthropicApiKey: string;
   readonly geminiApiKey: string;
@@ -96,16 +95,13 @@ export function loadProviderProfileSettingsFromPrefs(
   const ollama = loadOllamaSettingsFromPrefs(prefs);
   const chatProvider = parseChatProvider(readNonEmpty(prefs, CHAT_PROVIDER_PREF));
   const embedProvider = parseEmbedProvider(readNonEmpty(prefs, EMBED_PROVIDER_PREF));
-  const openaiApiKey = readNonEmpty(prefs, OPENAI_API_KEY_PREF) ?? "";
-  const anthropicApiKey = readNonEmpty(prefs, ANTHROPIC_API_KEY_PREF) ?? "";
-  const geminiApiKey = readNonEmpty(prefs, GEMINI_API_KEY_PREF) ?? "";
   return {
     ollama,
     chatProvider,
     embedProvider,
-    openaiApiKey,
-    anthropicApiKey,
-    geminiApiKey
+    openaiApiKey: "",
+    anthropicApiKey: "",
+    geminiApiKey: ""
   };
 }
 
@@ -119,9 +115,6 @@ export function saveProviderProfileSettingsToPrefs(
   saveOllamaSettingsToPrefs(writer, settings.ollama);
   writer.set(CHAT_PROVIDER_PREF, settings.chatProvider);
   writer.set(EMBED_PROVIDER_PREF, settings.embedProvider);
-  writer.set(OPENAI_API_KEY_PREF, settings.openaiApiKey.trim());
-  writer.set(ANTHROPIC_API_KEY_PREF, settings.anthropicApiKey.trim());
-  writer.set(GEMINI_API_KEY_PREF, settings.geminiApiKey.trim());
 }
 
 /**

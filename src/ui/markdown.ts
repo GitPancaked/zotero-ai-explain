@@ -469,14 +469,10 @@ function safeHref(raw: string): string | null {
   if (trimmed === "") {
     return null;
   }
-  // Relative URLs (no scheme) are allowed — Zotero plugin output rarely
-  // emits them but they're harmless.
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(trimmed)) {
-    return trimmed;
-  }
-  // Absolute URL: parse and check the scheme against the allow-list.
-  // URL parsing also rejects malformed inputs like `javascript: alert(1)`
-  // because `javascript:` is not in `ALLOWED_URL_SCHEMES`.
+  // Parse before checking the protocol: URL parsing removes embedded tabs
+  // and newlines, which can disguise javascript: from a scheme regex.
+  // Require absolute web/mail URLs; relative links could resolve against
+  // Zotero's privileged chrome document.
   try {
     const url = new URL(trimmed);
     if (ALLOWED_URL_SCHEMES.has(url.protocol)) {

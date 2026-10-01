@@ -55,7 +55,7 @@ describe("provider-profile defaults", () => {
 });
 
 describe("loadProviderProfileSettingsFromPrefs", () => {
-  it("T2: reads chat-provider, embed-provider, and API keys", () => {
+  it("T2: reads selectors and ignores legacy API keys", () => {
     const settings = loadProviderProfileSettingsFromPrefs(
       prefsFrom({
         [CHAT_PROVIDER_PREF]: "codex-api",
@@ -67,9 +67,9 @@ describe("loadProviderProfileSettingsFromPrefs", () => {
     );
     expect(settings.chatProvider).toBe("codex-api");
     expect(settings.embedProvider).toBe("openai");
-    expect(settings.openaiApiKey).toBe("sk-openai");
-    expect(settings.anthropicApiKey).toBe("sk-ant");
-    expect(settings.geminiApiKey).toBe("gem-key");
+    expect(settings.openaiApiKey).toBe("");
+    expect(settings.anthropicApiKey).toBe("");
+    expect(settings.geminiApiKey).toBe("");
   });
 
   it("T3: unknown chat-provider falls back to `ollama`", () => {
@@ -127,7 +127,7 @@ describe("saveProviderProfileSettingsToPrefs", () => {
     };
   }
 
-  it("T4: writes all chat/embed/API-key prefs alongside ollama prefs", () => {
+  it("T4: writes selectors and Ollama settings without API keys", () => {
     const { writer, writes } = makeWriter();
     const settings: ProviderProfileSettings = {
       ...createDefaultProviderProfileSettings(),
@@ -140,14 +140,14 @@ describe("saveProviderProfileSettingsToPrefs", () => {
     saveProviderProfileSettingsToPrefs(writer, settings);
     expect(writes[CHAT_PROVIDER_PREF]).toBe("claude-api");
     expect(writes[EMBED_PROVIDER_PREF]).toBe("gemini");
-    expect(writes[OPENAI_API_KEY_PREF]).toBe("sk-openai");
-    expect(writes[ANTHROPIC_API_KEY_PREF]).toBe("sk-ant");
-    expect(writes[GEMINI_API_KEY_PREF]).toBe("gem-key");
+    expect(writes).not.toHaveProperty(OPENAI_API_KEY_PREF);
+    expect(writes).not.toHaveProperty(ANTHROPIC_API_KEY_PREF);
+    expect(writes).not.toHaveProperty(GEMINI_API_KEY_PREF);
     // Ollama URL prefs should ALSO be written (the writer delegates).
     expect(writes["extensions.zotero-ai-explain.chat-base-url"]).toBe("http://localhost:11434");
   });
 
-  it("T9: write+read round-trips every field", () => {
+  it("T9: round-trips non-secret settings without persisting credentials", () => {
     const store = new Map<string, string>();
     const writer: StringPrefWriter = {
       set(name, value) {
@@ -169,7 +169,12 @@ describe("saveProviderProfileSettingsToPrefs", () => {
     };
     saveProviderProfileSettingsToPrefs(writer, original);
     const loaded = loadProviderProfileSettingsFromPrefs(reader);
-    expect(loaded).toEqual(original);
+    expect(loaded).toEqual({
+      ...original,
+      openaiApiKey: "",
+      anthropicApiKey: "",
+      geminiApiKey: ""
+    });
   });
 });
 

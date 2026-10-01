@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 export const releaseDownloadBaseUrl =
-  "https://github.com/vishnutskumar/zotero-ai-explain/releases/download";
+  "https://github.com/GitPancaked/zotero-ai-explain/releases/download";
 // Strict by design: release artifacts must be clean semver. Dev branches
 // advance the manifest version to the NEXT clean semver (e.g. "0.4.0"
 // while the latest release is "0.3.0") so Zotero's auto-updater treats

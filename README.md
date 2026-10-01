@@ -3,7 +3,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ESM-f7df1e?logo=javascript&logoColor=222222)
 ![CSS](https://img.shields.io/badge/CSS-UI%20Surfaces-1572b6?logo=css3&logoColor=white)
-![Zotero](https://img.shields.io/badge/Zotero-8.0%E2%80%939.99-990000)
+![Zotero](https://img.shields.io/badge/Zotero-8.0%E2%80%9310.0-990000)
 ![Tests](https://img.shields.io/badge/tests-vitest-6e9f18?logo=vitest&logoColor=white)
 
 **Zotero AI Explain** is a Zotero plugin that turns a passage in the PDF reader into an AI
@@ -111,7 +111,13 @@ sidecars, slash commands) does not bleed into Zotero responses — see
 
 ### Compatibility
 
-Zotero **8.0 – 9.99.99** (the plugin manifest's `strict_min_version` / `strict_max_version`).
+Zotero **8.0 – 10.0.\*** (the plugin manifest's `strict_min_version` / `strict_max_version`).
+
+The fork's compatibility update follows the
+[Zotero 10 migration guide](https://www.zotero.org/support/dev/zotero_10_for_developers). Automated
+checks cover the plugin contracts; installation, reader commands, indexing, and proxy startup still
+require a smoke test in Zotero 10. See [the security review](docs/security-review-2026-10-01.md) for
+confirmed issues and remaining risks.
 
 ![Screenshot-style preview of the Zotero reader popup and sidebar](docs/assets/readme-sidebar-screenshot.svg)
 
@@ -202,8 +208,33 @@ ChatGPT login, via the proxy) with `embed=ollama` (free, local, private).
 | `claude-api`     | yes  |  no   |   yes   |             no              | no                                   |
 | `gemini` (embed) |  no  |  yes  |   yes   |             no              | no                                   |
 
-API keys are never stored as plaintext preferences — the plugin holds a **secret reference** and
-resolves the key at request time.
+API keys are saved in **Windows Credential Manager** on Windows or your **Secret Service keyring**
+on Linux. Keys are loaded into memory for requests; new keys are never written to Zotero
+preferences, command-line arguments, or temporary files. Keys are shared across Zotero profiles
+belonging to the same OS user. Saving a blank key field deletes that provider's credential.
+
+On **Arch Linux**, install `libsecret` and a Secret Service backend, such as GNOME Keyring:
+
+```bash
+sudo pacman -S libsecret gnome-keyring
+```
+
+Your desktop session must start the Secret Service and unlock a **password-protected default
+keyring**. GNOME normally manages this; other desktop environments/window managers may need
+login/PAM setup. See the [Arch GNOME Keyring guide](https://wiki.archlinux.org/title/GNOME/Keyring)
+and [secret-tool manual](https://man.archlinux.org/man/core/libsecret/secret-tool.1.en). An empty
+keyring password provides weaker protection at rest.
+
+If the store is missing, locked, or unavailable, key saves fail visibly without falling back to
+plaintext. Windows requires Windows PowerShell and permission to use its native credential APIs.
+API-key storage on macOS is currently unavailable; local/keyless providers continue to work.
+
+Existing plaintext keys migrate at startup. A legacy preference is removed only after its secure
+replacement is verified. If migration fails, the preference is retained to avoid losing your key,
+but the plugin does not use it; fix/unlock the keyring and restart Zotero. Migration cannot remove
+keys from old profile backups, so rotate any keys whose backups may have been exposed. OS credential
+storage protects keys at rest; it does not prevent other programs running as your user from
+accessing unlocked credentials or plugin memory.
 
 ### The local LLM proxy
 

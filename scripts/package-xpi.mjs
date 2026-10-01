@@ -72,10 +72,19 @@ try {
   const archiveTarget = `../${artifactPath}`;
   const includes = ["manifest.json", "bootstrap.js", "content", "llm-proxy"];
   if (isWindows) {
-    execFileSync("7z", ["a", "-tzip", "-mx=5", archiveTarget, ...includes], {
-      cwd: "addon",
-      stdio: "inherit"
-    });
+    try {
+      execFileSync("7z", ["a", "-tzip", "-mx=5", archiveTarget, ...includes], {
+        cwd: "addon",
+        stdio: "inherit"
+      });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // Windows ships bsdtar, so local builds do not require 7-Zip.
+      execFileSync("tar", ["--format", "zip", "-cf", archiveTarget, ...includes], {
+        cwd: "addon",
+        stdio: "inherit"
+      });
+    }
   } else {
     execFileSync("zip", ["-X", "-r", archiveTarget, ...includes], {
       cwd: "addon",

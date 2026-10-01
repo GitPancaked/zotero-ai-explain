@@ -45,6 +45,12 @@ import {
 } from "../../src/preferences/ollama-profile.js";
 import type { PopupController } from "../../src/ui/popup-controller.js";
 import type { SidebarController } from "../../src/ui/sidebar-controller.js";
+import {
+  createDefaultProviderProfileSettings,
+  OPENAI_API_KEY_PREF
+} from "../../src/preferences/provider-profile.js";
+import { createSecureProviderProfileStore } from "../../src/secrets/secure-provider-profile.js";
+import type { ApiKeyProvider } from "../../src/secrets/credential-store.js";
 
 type PrefStore = {
   values: Map<string, string>;
@@ -110,6 +116,72 @@ afterEach(() => {
 });
 
 describe("settings save flow (integration)", () => {
+  it("routes API-key saves to the credential store and reloads them on reopen", async () => {
+    const prefs = makePrefStore();
+    const vault = new Map<ApiKeyProvider, string>();
+    const profiles = createSecureProviderProfileStore({
+      prefs: prefs.reader,
+      writer: prefs.writer,
+      storageName: "test credential store",
+      credentials: {
+        get: (provider) => Promise.resolve(vault.get(provider) ?? null),
+        set: (provider, secret) => {
+          vault.set(provider, secret);
+          return Promise.resolve();
+        },
+        delete: (provider) => {
+          vault.delete(provider);
+          return Promise.resolve();
+        }
+      }
+    });
+    await profiles.initialize();
+    const ui = createZoteroUiAdapter({
+      Zotero: { debug: vi.fn(), getMainWindow: () => window },
+      pluginId: "test"
+    });
+    const runtime = createZoteroRuntime({
+      settings: createDefaultOllamaSettings(),
+      indexingController: createIndexingController({
+        logger: { debug: () => undefined },
+        ...controllerStubDeps()
+      }),
+      ui,
+      store: createConversationStore(),
+      profile: () => ollamaSettingsToProfile(createDefaultOllamaSettings()),
+      ...makeStubControllers(),
+      disclosure: () => "test",
+      prefsWriter: prefs.writer,
+      fetch: makeFakeFetch(["gemma4:e4b", "embeddinggemma"]),
+      providerProfile: createDefaultProviderProfileSettings(),
+      readProviderProfile: () => profiles.read(),
+      saveProviderProfile: (settings) => profiles.save(settings),
+      credentialStorageMessage: () => profiles.message()
+    });
+    await runtime.startup();
+    runtime.openSettings();
+    const input = document.querySelector<HTMLInputElement>('[name="openaiApiKey"]');
+    if (input === null) throw new Error("Missing key field");
+    input.value = "synthetic-integration-key";
+    document.querySelector<HTMLButtonElement>('[data-action="save-settings"]')?.click();
+    await vi.waitFor(() => {
+      expect(vault.get("openai")).toBe("synthetic-integration-key");
+    });
+    expect(prefs.values.get(OPENAI_API_KEY_PREF)).toBe("");
+    expect(Array.from(prefs.values.values())).not.toContain("synthetic-integration-key");
+    await vi.waitFor(
+      () => {
+        expect(document.querySelector(".zotero-ai-dialog")).toBeNull();
+      },
+      { timeout: 2000 }
+    );
+    runtime.openSettings();
+    expect(document.querySelector<HTMLInputElement>('[name="openaiApiKey"]')?.value).toBe(
+      "synthetic-integration-key"
+    );
+    document.querySelector<HTMLButtonElement>('[data-action="cancel-settings"]')?.click();
+    await runtime.shutdown();
+  });
   it("persists user-typed values and the dialog reflects them on reopen", async () => {
     const prefs = makePrefStore();
     const fakeFetch = makeFakeFetch(["gemma4:e2b", "embedding-v2"]);
