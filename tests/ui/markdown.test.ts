@@ -149,6 +149,17 @@ describe("renderMarkdown — inline elements", () => {
     // The href MUST NOT be set when the scheme is unsafe.
     expect(link?.hasAttribute("href")).toBe(false);
   });
+  it.each([
+    "java\tscript:alert(1)",
+    "data:text/html,test",
+    "chrome://zotero/content/",
+    "../settings",
+    "//example.com"
+  ])("strips unsafe or relative link %s", (href) => {
+    const target = fresh();
+    renderMarkdown(target, `[click](${href})`);
+    expect(target.querySelector("a")?.hasAttribute("href")).toBe(false);
+  });
 });
 
 describe("renderMarkdown — streaming behavior", () => {

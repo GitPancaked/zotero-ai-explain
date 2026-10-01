@@ -874,6 +874,7 @@ export function renderSettingsView(inputData: {
    * fields. Omitted callers (legacy tests) get the prior dialog shape.
    */
   readonly providerProfile?: ProviderProfileSettings;
+  readonly credentialStorageMessage?: string;
 }): HTMLElement {
   const element = document.createElement("form");
   element.className = "zotero-ai-settings";
@@ -946,7 +947,9 @@ export function renderSettingsView(inputData: {
 
     const apiWarning = document.createElement("p");
     apiWarning.className = "zotero-ai-providers__warning";
-    apiWarning.textContent = "API keys are stored in plain text in Zotero's preferences.";
+    apiWarning.textContent =
+      inputData.credentialStorageMessage ??
+      "API keys require OS secure storage. They are never saved in Zotero preferences.";
     apiWarning.setAttribute("style", SECTION_BLURB_STYLE);
     element.append(apiWarning);
 
@@ -1133,7 +1136,7 @@ export type ModelDiscoveryContext = {
 export function wireSettingsView(input: {
   readonly view: HTMLElement;
   readonly validate: SettingsValidator;
-  readonly onSave: (values: SettingsFormValues) => void;
+  readonly onSave: (values: SettingsFormValues) => void | Promise<void>;
   readonly close: () => void;
   readonly flashMs?: number;
   readonly proxy?: ProxyLifecycleCallbacks;
@@ -1316,7 +1319,7 @@ export function wireSettingsView(input: {
           }
           return;
         }
-        input.onSave(values);
+        await input.onSave(values);
         if (statusEl !== null) {
           statusEl.textContent = "Saved";
           statusEl.hidden = false;

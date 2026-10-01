@@ -44,8 +44,14 @@ async function startup(data, reason) {
   // to usable globals unless explicitly placed on the loadSubScript scope.
   // We expose live getters for document/window (chrome window can change)
   // and a direct binding for fetch (a stable function reference).
+  const mainWindow = Zotero.getMainWindow();
   const scope = {
     Zotero,
+    ChromeUtils,
+    TextEncoder: mainWindow?.TextEncoder ?? globalThis.TextEncoder,
+    TextDecoder: mainWindow?.TextDecoder ?? globalThis.TextDecoder,
+    setTimeout: mainWindow?.setTimeout.bind(mainWindow) ?? globalThis.setTimeout,
+    clearTimeout: mainWindow?.clearTimeout.bind(mainWindow) ?? globalThis.clearTimeout,
     get document() {
       return Zotero.getMainWindow()?.document;
     },

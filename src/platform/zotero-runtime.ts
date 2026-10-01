@@ -325,6 +325,9 @@ export function createZoteroRuntime(deps: {
    * the e2e driver still get the legacy shape.
    */
   readonly providerProfile?: ProviderProfileSettings;
+  readonly saveProviderProfile?: (settings: ProviderProfileSettings) => Promise<void>;
+  readonly credentialStorageMessage?: () => string;
+  readonly readProviderProfile?: () => ProviderProfileSettings;
   /** Optional listener fired with the persisted provider profile after a Save. */
   readonly onProviderProfileChange?: ProviderProfileChangeListener;
   /**
@@ -1351,6 +1354,8 @@ export function createZoteroRuntime(deps: {
   }
 
   function openSettingsDialog(): void {
+    if (deps.readProviderProfile !== undefined) currentProviderProfile = deps.readProviderProfile();
+    const displayedProviderProfile = currentProviderProfile;
     // Snapshot the proxy state once at open time; the wire-proxy module
     // pushes asynchronous updates into the rendered DOM via
     // `updateProxyStatus` (wired by bootstrap's `onStateChange`).
@@ -1358,6 +1363,9 @@ export function createZoteroRuntime(deps: {
     const view = renderSettingsView({
       settings: currentSettings,
       indexStatus: deps.indexingController.getStatus(),
+      credentialStorageMessage:
+        deps.credentialStorageMessage?.() ??
+        "Secure key storage is unavailable. API keys cannot be saved in this host.",
       ...(proxySnapshot !== undefined ? { proxy: proxySnapshot } : {}),
       ...(currentProviderProfile !== undefined ? { providerProfile: currentProviderProfile } : {})
     });
@@ -1396,7 +1404,7 @@ export function createZoteroRuntime(deps: {
             }
           }
         : {}),
-      onSave: (values) => {
+      onSave: async (values) => {
         const next: OllamaSettings = {
           // Legacy mirror — the writer derives the legacy
           // `ollama-base-url` pref from this. Chat is the right default
@@ -1411,31 +1419,52 @@ export function createZoteroRuntime(deps: {
           // whatever the current settings carry.
           localOnly: currentSettings.localOnly
         };
-        if (deps.prefsWriter !== undefined) {
-          saveOllamaSettingsToPrefs(deps.prefsWriter, next);
-        }
-        currentSettings = next;
-        deps.onSettingsChange?.(next);
 
         // Phase 4 direct-API: persist provider profile changes when the
         // dialog rendered them. The values bundle carries optional
         // chat/embed selectors + API keys; merge them onto the cached
         // profile so untouched fields keep their prior state.
-        if (currentProviderProfile !== undefined) {
+        if (currentProviderProfile !== undefined && displayedProviderProfile !== undefined) {
+          const latestProfile = deps.readProviderProfile?.() ?? currentProviderProfile;
           const nextProfile: ProviderProfileSettings = {
             ollama: next,
             chatProvider: values.chatProvider ?? currentProviderProfile.chatProvider,
             embedProvider: values.embedProvider ?? currentProviderProfile.embedProvider,
-            openaiApiKey: values.openaiApiKey ?? currentProviderProfile.openaiApiKey,
-            anthropicApiKey: values.anthropicApiKey ?? currentProviderProfile.anthropicApiKey,
-            geminiApiKey: values.geminiApiKey ?? currentProviderProfile.geminiApiKey
+            openaiApiKey:
+              values.openaiApiKey === undefined ||
+              values.openaiApiKey === displayedProviderProfile.openaiApiKey
+                ? latestProfile.openaiApiKey
+                : values.openaiApiKey,
+            anthropicApiKey:
+              values.anthropicApiKey === undefined ||
+              values.anthropicApiKey === displayedProviderProfile.anthropicApiKey
+                ? latestProfile.anthropicApiKey
+                : values.anthropicApiKey,
+            geminiApiKey:
+              values.geminiApiKey === undefined ||
+              values.geminiApiKey === displayedProviderProfile.geminiApiKey
+                ? latestProfile.geminiApiKey
+                : values.geminiApiKey
           };
-          if (deps.prefsWriter !== undefined) {
+          if (deps.saveProviderProfile !== undefined) {
+            await deps.saveProviderProfile(nextProfile);
+          } else if (
+            nextProfile.openaiApiKey !== "" ||
+            nextProfile.anthropicApiKey !== "" ||
+            nextProfile.geminiApiKey !== ""
+          ) {
+            throw new Error("Secure key storage is unavailable. API keys were not saved.");
+          } else if (deps.prefsWriter !== undefined) {
             saveProviderProfileSettingsToPrefs(deps.prefsWriter, nextProfile);
           }
           currentProviderProfile = nextProfile;
           deps.onProviderProfileChange?.(nextProfile);
         }
+        if (deps.prefsWriter !== undefined) {
+          saveOllamaSettingsToPrefs(deps.prefsWriter, next);
+        }
+        currentSettings = next;
+        deps.onSettingsChange?.(next);
       },
       close: () => {
         detachIndex();
