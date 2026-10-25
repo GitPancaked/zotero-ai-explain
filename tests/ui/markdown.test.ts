@@ -12,8 +12,7 @@
  *   5. XSS-safe: raw `<script>`, `<img onerror>`, etc. in source MUST be
  *      rendered as literal text (not executed and not creating real
  *      `<script>`/`<img>` elements).
- *   6. LaTeX math (`$x^2$`) is left as literal text — no crash, no special
- *      rendering.
+ *   6. LaTeX math renders as native MathML.
  */
 
 import { describe, expect, it } from "vitest";
@@ -224,17 +223,34 @@ describe("renderMarkdown — XSS safety", () => {
   });
 });
 
-describe("renderMarkdown — LaTeX passthrough", () => {
-  it("leaves $inline math$ as literal text without crashing", () => {
+describe("renderMarkdown — LaTeX rendering", () => {
+  it("renders the screenshot formulas with backslash delimiters", () => {
     const target = fresh();
-    renderMarkdown(target, "The arrow $\\rightarrow$ means implication.");
-    expect(target.textContent).toContain("$\\rightarrow$");
+    renderMarkdown(
+      target,
+      String.raw`Sample \(z\), then:
+
+\[
+z \longrightarrow x
+\]
+
+Infer \(p(z\mid x)\).`
+    );
+    expect(target.querySelectorAll("math")).toHaveLength(3);
+    expect(target.querySelector('math[display="block"]')).not.toBeNull();
+    expect(target.textContent).toContain("⟶");
   });
 
-  it("leaves $x^2 + y^2 = z^2$ unchanged", () => {
+  it("renders inline math as MathML", () => {
+    const target = fresh();
+    renderMarkdown(target, "The arrow $\\rightarrow$ means implication.");
+    expect(target.querySelector("math")?.textContent).toContain("→");
+  });
+
+  it("renders powers as MathML", () => {
     const target = fresh();
     renderMarkdown(target, "Pythagoras: $x^2 + y^2 = z^2$.");
-    expect(target.textContent).toContain("$x^2 + y^2 = z^2$");
+    expect(target.querySelector("math")).not.toBeNull();
   });
 });
 

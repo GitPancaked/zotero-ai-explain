@@ -700,6 +700,7 @@ export function createZoteroRuntime(deps: {
       tearDownRetrieval();
     };
 
+    let transferringToSidebar = false;
     const dismissPopup = (): void => {
       popupUnsubscribe?.();
       popupUnsubscribe = null;
@@ -809,6 +810,7 @@ export function createZoteroRuntime(deps: {
       popupUnsubscribe = null;
       detachPopupCitationClicks?.();
       detachPopupCitationClicks = null;
+      transferringToSidebar = true;
       popupUnmount?.();
       popupUnmount = null;
       deps.popupController.continueInSidebar(conversation.id);
@@ -875,7 +877,7 @@ export function createZoteroRuntime(deps: {
         popupUnmount = null;
         detachPopupCitationClicks?.();
         detachPopupCitationClicks = null;
-        tearDownRetrieval();
+        if (!transferringToSidebar) tearDownRetrieval();
       }
     });
     popupUnsubscribe = deps.store.subscribe(conversation.id, (updated) => {
@@ -958,14 +960,15 @@ export function createZoteroRuntime(deps: {
     );
     const turnsContainer = popup.querySelector<HTMLElement>(".zotero-ai-explain-popup__turns");
 
+    let sidebarUnmount: Unsubscribe | null = null;
+    let sidebarUnsubscribe: Unsubscribe | null = null;
+    let detachSidebarCitationClicks: (() => void) | null = null;
+    let sidebarMessages: HTMLOListElement | null = null;
+    let transferringToSidebar = false;
     let popupUnmount: Unsubscribe | null = null;
     let popupUnsubscribe: Unsubscribe | null = null;
     let detachPopupCitationClicks: (() => void) | null = null;
-    // Idempotent teardown for the retrieval subscription. Ask-question
-    // has no "Continue in sidebar" affordance today, so the popup is
-    // the sole owner — but mirror the explain helper anyway so a future
-    // change that adds sidebar transitions doesn't reintroduce the
-    // popup-correctness P5 efficiency leak.
+    // Retrieval ownership transfers to the sidebar on handoff.
     let teardownAskRetrieval: (() => void) | null = () => {
       retrievalUnsubscribe?.();
     };
@@ -980,8 +983,121 @@ export function createZoteroRuntime(deps: {
       detachPopupCitationClicks?.();
       detachPopupCitationClicks = null;
       popupUnmount?.();
+      sidebarUnsubscribe?.();
+      detachSidebarCitationClicks?.();
+      sidebarUnmount?.();
       tearDownAskRetrieval();
     };
+
+    const mountSidebar = (): void => {
+      const current = deps.store.get(conversation.id) ?? conversation;
+      const view = renderSidebarConversation({
+        quote: selection.quote,
+        sourceLabel: describeSource(selection),
+        messages: current.messages
+      });
+
+      sidebarMessages = view.querySelector<HTMLOListElement>(
+        ".zotero-ai-explain-sidebar__messages"
+      );
+
+      const form = view.querySelector<HTMLFormElement>(".zotero-ai-explain-sidebar__form");
+      const textarea = view.querySelector<HTMLTextAreaElement>('[name="followUp"]');
+      form?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const value = textarea?.value ?? "";
+        if (textarea) {
+          textarea.value = "";
+        }
+        void deps.sidebarController.sendFollowUp(conversation.id, value);
+      });
+
+      sidebarUnmount = deps.ui.mountSidebar(view, {
+        onDismiss: () => {
+          // The close button dismisses the wrapper; tear down EVERY
+          // subscription that this conversation owned. After the
+          // popup→sidebar transition the sidebar is the sole owner of
+          // the retrieval channel subscription, so we tear that down
+          // here too — `tearDownAskRetrieval` is idempotent if the popup
+          // dismissal path already ran it.
+          sidebarUnsubscribe?.();
+          sidebarUnsubscribe = null;
+          detachSidebarCitationClicks?.();
+          detachSidebarCitationClicks = null;
+          sidebarUnmount = null; // adapter already removed the element
+          sidebarMessages = null;
+          if (!transferringToSidebar) tearDownAskRetrieval();
+        }
+      });
+      sidebarUnsubscribe = deps.store.subscribe(conversation.id, (updated) => {
+        const list = sidebarMessages;
+        if (list === null) {
+          return;
+        }
+        // Skip system messages — see `renderMessage` in sidebar-view.ts.
+        // The CSS bubble layout keys off `.__turn[data-role]`, so the row
+        // classes here must stay in sync with the initial render.
+        //
+        // F3: each visible row reads its OWN lookup by the message's
+        // ORIGINAL index in `updated.messages`. The filtered render
+        // omits system messages, but the lookup is keyed against the
+        // unfiltered index — we track that separately so a system
+        // message in the middle doesn't shift later turns' keys.
+        const rows = updated.messages
+          .map((message, originalIndex) => ({ message, originalIndex }))
+          .filter(({ message }) => message.role !== "system")
+          .map(({ message, originalIndex }) => {
+            const row = list.ownerDocument.createElement("li");
+            row.className = "zotero-ai-explain-sidebar__turn";
+            row.dataset.role = message.role;
+            const attribution = list.ownerDocument.createElement("span");
+            attribution.className = "zotero-ai-explain-sidebar__role";
+            attribution.textContent = `${message.role}: `;
+            const body = list.ownerDocument.createElement("div");
+            body.className = "zotero-ai-explain-sidebar__body";
+            // Sidebar gets the same citation linkification as the popup:
+            // when retrieval ran for THIS turn, citations are clickable;
+            // otherwise they're literal text.
+            const lookup = updated.citationLookups.get(originalIndex);
+            if (lookup !== undefined) {
+              renderMarkdownWithCitations(body, message.content, { lookup });
+            } else {
+              renderMarkdown(body, message.content);
+            }
+            row.append(attribution, body);
+            return row;
+          });
+        list.replaceChildren(...rows);
+      });
+      // Delegated citation-click handler on the sidebar view root, same
+      // pattern as the popup. Re-attached per remount because the view
+      // element itself is new each time. The teardown reference lives
+      // in `detachSidebarCitationClicks` so `cleanupExplain` / the
+      // sidebar's `onDismiss` can unwind the listener symmetrically.
+      detachSidebarCitationClicks = attachCitationClickHandler(view, dispatchPopupCitation);
+    };
+
+    const continueButton = popup.querySelector<HTMLButtonElement>(
+      '[data-action="continue-sidebar"]'
+    );
+    continueButton?.addEventListener("click", () => {
+      // Tear down popup-specific state but keep `teardownRetrieval`
+      // ALIVE — ownership of the retrieval subscription transfers to
+      // the sidebar, which calls `tearDownAskRetrieval` from its
+      // `onDismiss`. Without the click-handler detach here the popup
+      // root (about to be removed by the adapter) would briefly keep a
+      // listener attached; the explicit `detach` is symmetric with the
+      // popup's `onDismiss` teardown path.
+      popupUnsubscribe?.();
+      popupUnsubscribe = null;
+      detachPopupCitationClicks?.();
+      detachPopupCitationClicks = null;
+      transferringToSidebar = true;
+      popupUnmount?.();
+      popupUnmount = null;
+      deps.popupController.continueInSidebar(conversation.id);
+      mountSidebar();
+    });
 
     // The first submitted question is framed with the quote; later turns
     // are plain (the sticky-quote system message keeps them anchored).
@@ -1029,7 +1145,7 @@ export function createZoteroRuntime(deps: {
         popupUnmount = null;
         detachPopupCitationClicks?.();
         detachPopupCitationClicks = null;
-        tearDownAskRetrieval();
+        if (!transferringToSidebar) tearDownAskRetrieval();
       }
     });
     popupUnsubscribe = deps.store.subscribe(conversation.id, (updated) => {

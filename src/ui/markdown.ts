@@ -1,3 +1,4 @@
+import katex from "katex";
 /**
  * Lightweight, XSS-safe markdown renderer for streamed model output.
  *
@@ -6,8 +7,7 @@
  * lists, links `[text](url)` (always `rel="noopener noreferrer"` and
  * `target="_blank"`), blockquotes (`>`), and paragraphs (blank-line
  * separated). Out of scope: tables, raw HTML embedding, footnotes,
- * definition lists, and LaTeX math (left as literal text so the bundle
- * stays small).
+ * definition lists. LaTeX math renders as native MathML.
  *
  * The renderer is **streaming-friendly**: callers invoke
  * `renderMarkdown(target, source)` on every delta. The target is cleared
@@ -16,7 +16,7 @@
  *
  * Security: every text fragment lands in the DOM through
  * `document.createTextNode` or `element.textContent`. We never use
- * `innerHTML` and never interpolate source strings into HTML strings, so
+ * model-supplied HTML and never interpolate source strings into HTML strings, so
  * `<script>` and `<img onerror>` in model output render as literal text.
  */
 
@@ -223,6 +223,7 @@ function renderBlock(
 
 type InlineToken =
   | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "math"; readonly text: string; readonly display: boolean }
   | { readonly kind: "code"; readonly text: string }
   | { readonly kind: "bold"; readonly text: string }
   | { readonly kind: "italic"; readonly text: string }
@@ -266,6 +267,20 @@ function renderInlineToken(doc: Document, token: InlineToken): Node {
       // `emitText` directly. Kept for switch-exhaustiveness so a future
       // refactor cannot accidentally drop the text branch.
       return doc.createTextNode(token.text);
+    case "math": {
+      const element = doc.createElement("span");
+      // KaTeX generates trusted MathML; HTML commands and external resources
+      // are disabled. Native MathML needs no external fonts or stylesheet.
+      katex.render(token.text, element, {
+        output: "mathml",
+        displayMode: token.display,
+        throwOnError: false,
+        trust: false,
+        strict: "ignore",
+        maxExpand: 1000
+      });
+      return element;
+    }
     case "code": {
       const element = doc.createElement("code");
       element.textContent = token.text;
@@ -317,6 +332,32 @@ function tokeniseInline(source: string): readonly InlineToken[] {
 
   while (i < source.length) {
     const ch = source[i];
+
+    const delimiter = source.startsWith("\\(", i)
+      ? ["\\(", "\\)"]
+      : source.startsWith("\\[", i)
+        ? ["\\[", "\\]"]
+        : source.startsWith("$$", i)
+          ? ["$$", "$$"]
+          : ch === "$"
+            ? ["$", "$"]
+            : null;
+    if (delimiter !== null) {
+      const open = delimiter[0] ?? "";
+      const closeDelimiter = delimiter[1] ?? "";
+      const close = source.indexOf(closeDelimiter, i + open.length);
+      if (close > i + open.length) {
+        flushText(i);
+        tokens.push({
+          kind: "math",
+          text: source.slice(i + open.length, close),
+          display: open === "\\[" || open === "$$"
+        });
+        i = close + closeDelimiter.length;
+        textStart = i;
+        continue;
+      }
+    }
 
     // Inline code: `…`. Matches the shortest closing backtick to handle
     // multiple inline-code spans in one line.

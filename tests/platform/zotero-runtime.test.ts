@@ -333,7 +333,7 @@ describe("createZoteroRuntime", () => {
     }
   });
 
-  it("moves the conversation to the sidebar when the continue button is clicked", async () => {
+  it.each([0, 1])("moves reader command %s to the sidebar when clicked", async (command) => {
     const calls: string[] = [];
     const { ui, readerActions } = createFakeUi(calls);
     const store = createConversationStore();
@@ -366,7 +366,7 @@ describe("createZoteroRuntime", () => {
     });
 
     await runtime.startup();
-    readerActions[0]?.(createSelection());
+    readerActions[command]?.(createSelection());
 
     const continueButton = document.querySelector<HTMLButtonElement>(
       '[data-action="continue-sidebar"]'
